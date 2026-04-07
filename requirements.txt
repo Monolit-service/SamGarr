@@ -1,0 +1,8 @@
+aiogram==3.27.0
+SQLAlchemy==2.0.40
+aiofiles==24.1.0
+aiosqlite==0.21.0
+pydantic==2.11.3
+APScheduler==3.11.0
+python-dotenv==1.1.0
+httpx==0.28.1
