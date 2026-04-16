@@ -50,14 +50,21 @@ class User(Base):
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    referral_code: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    referred_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    referred_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    referral_bonus_granted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    referred_by: Mapped["User | None"] = relationship(remote_side="User.id")
     payments: Mapped[list[Payment]] = relationship(back_populates="user")
     subscriptions: Mapped[list[Subscription]] = relationship(back_populates="user")
     anonymous_questions: Mapped[list[AnonymousQuestion]] = relationship(back_populates="user", cascade="all, delete-orphan")
     question_deliveries: Mapped[list[AnonymousQuestionDelivery]] = relationship(back_populates="admin_user", cascade="all, delete-orphan")
     created_polls: Mapped[list[Poll]] = relationship(back_populates="creator")
     poll_votes: Mapped[list[PollVote]] = relationship(back_populates="user")
+    prize_awards: Mapped[list[PrizeAward]] = relationship(cascade="all, delete-orphan")
+    prize_spin_purchases: Mapped[list[PrizeSpinPurchase]] = relationship(cascade="all, delete-orphan")
 
 
 class Plan(Base):
@@ -88,12 +95,30 @@ class Payment(Base):
     telegram_payment_charge_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provider_payment_charge_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     amount_xtr: Mapped[int] = mapped_column(Integer)
+    prize_award_id: Mapped[int | None] = mapped_column(ForeignKey("prize_awards.id", ondelete="SET NULL"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(50), default=PaymentStatus.PENDING)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     user: Mapped[User] = relationship(back_populates="payments")
     plan: Mapped[Plan] = relationship(back_populates="payments")
+
+
+class PrizeSpinPurchase(Base):
+    __tablename__ = "prize_spin_purchases"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    payload: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    amount_xtr: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(50), default=PaymentStatus.PENDING)
+    telegram_payment_charge_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_payment_charge_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="prize_spin_purchases")
 
 
 class Subscription(Base):
@@ -142,6 +167,26 @@ class AnonymousQuestionDelivery(Base):
 
     question: Mapped[AnonymousQuestion] = relationship(back_populates="deliveries")
     admin_user: Mapped[User | None] = relationship(back_populates="question_deliveries")
+
+
+
+
+class PrizeAward(Base):
+    __tablename__ = "prize_awards"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    prize_code: Mapped[str] = mapped_column(String(64), index=True)
+    prize_title: Mapped[str] = mapped_column(String(255))
+    discount_percent: Mapped[int] = mapped_column(Integer, default=0)
+    free_days: Mapped[int] = mapped_column(Integer, default=0)
+    is_redeemed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_burned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    burned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped[User] = relationship()
 
 
 class Poll(Base):

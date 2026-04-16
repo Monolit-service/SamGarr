@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import Payment, PaymentMethod, PaymentStatus, Plan, User
+from app.models import Payment, PaymentMethod, PaymentStatus, Plan, PrizeSpinPurchase, User
 
 settings = get_settings()
 
@@ -84,8 +84,8 @@ async def _crypto_api_get(method: str, params: dict) -> dict:
     return data
 
 
-def crypto_price_for_plan(plan: Plan) -> str:
-    amount = (Decimal(plan.price_xtr) * Decimal(str(settings.crypto_usdt_per_star))).quantize(
+def crypto_price_for_xtr_amount(amount_xtr: int) -> str:
+    amount = (Decimal(amount_xtr) * Decimal(str(settings.crypto_usdt_per_star))).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP
     )
     if amount <= 0:
@@ -98,6 +98,9 @@ async def create_pending_payment(
     user: User,
     plan: Plan,
     payment_method: PaymentMethod = PaymentMethod.STARS,
+    *,
+    amount_xtr: int | None = None,
+    prize_award_id: int | None = None,
 ) -> Payment:
     payload = f"sub:{payment_method}:{user.telegram_id}:{plan.id}:{uuid4().hex[:12]}"
     payment = Payment(
@@ -105,7 +108,8 @@ async def create_pending_payment(
         plan_id=plan.id,
         payload=payload,
         payment_method=payment_method,
-        amount_xtr=plan.price_xtr,
+        amount_xtr=amount_xtr if amount_xtr is not None else plan.price_xtr,
+        prize_award_id=prize_award_id,
         status=PaymentStatus.PENDING,
     )
     session.add(payment)
@@ -115,7 +119,7 @@ async def create_pending_payment(
 
 
 async def send_plan_invoice(message: Message, payment: Payment, plan: Plan) -> None:
-    prices = [LabeledPrice(label=plan.title, amount=plan.price_xtr)]
+    prices = [LabeledPrice(label=plan.title, amount=payment.amount_xtr)]
     await message.answer_invoice(
         title=plan.title,
         description=plan.description,
@@ -175,7 +179,7 @@ async def create_crypto_invoice_for_payment(session: AsyncSession, payment: Paym
     if not settings.crypto_pay_enabled:
         raise RuntimeError("Crypto Pay token is not configured")
 
-    amount = crypto_price_for_plan(plan)
+    amount = crypto_price_for_xtr_amount(payment.amount_xtr)
     payload = {
         "asset": settings.crypto_pay_asset,
         "amount": amount,
@@ -255,3 +259,75 @@ async def sync_crypto_payment_status(session: AsyncSession, payment: Payment) ->
         telegram_payment_charge_id=None,
         provider_payment_charge_id=provider_charge_id,
     )
+
+
+def crypto_price_for_plan(plan: Plan) -> str:
+    return crypto_price_for_xtr_amount(plan.price_xtr)
+
+
+async def create_prize_spin_purchase(session: AsyncSession, user: User, *, amount_xtr: int | None = None) -> PrizeSpinPurchase:
+    payload = f"prize_access:stars:{user.telegram_id}:{uuid4().hex[:12]}"
+    purchase = PrizeSpinPurchase(
+        user_id=user.id,
+        payload=payload,
+        amount_xtr=amount_xtr if amount_xtr is not None else settings.prize_access_price_xtr,
+        status=PaymentStatus.PENDING,
+    )
+    session.add(purchase)
+    await session.commit()
+    await session.refresh(purchase)
+    return purchase
+
+
+async def send_prize_spin_invoice(message: Message, purchase: PrizeSpinPurchase) -> None:
+    prices = [LabeledPrice(label="Доступ к рандомайзеру", amount=purchase.amount_xtr)]
+    await message.answer_invoice(
+        title="Доступ к рандомайзеру",
+        description="Оплата одного доступа к рандомайзеру призов.",
+        payload=purchase.payload,
+        currency="XTR",
+        prices=prices,
+        provider_token="",
+        start_parameter="prize_access",
+    )
+
+
+async def mark_prize_spin_purchase_paid(
+    session: AsyncSession,
+    payload: str,
+    telegram_payment_charge_id: str | None,
+    provider_payment_charge_id: str | None,
+) -> tuple[PrizeSpinPurchase | None, bool]:
+    purchase = await session.scalar(select(PrizeSpinPurchase).where(PrizeSpinPurchase.payload == payload))
+    if purchase is None:
+        return None, False
+    if purchase.status == PaymentStatus.PAID:
+        return purchase, False
+
+    purchase.status = PaymentStatus.PAID
+    purchase.telegram_payment_charge_id = telegram_payment_charge_id
+    purchase.provider_payment_charge_id = provider_payment_charge_id
+    purchase.paid_at = datetime.utcnow()
+    await session.commit()
+    await session.refresh(purchase)
+    return purchase, True
+
+
+async def get_available_prize_spin_purchase(session: AsyncSession, user_id: int) -> PrizeSpinPurchase | None:
+    return await session.scalar(
+        select(PrizeSpinPurchase)
+        .where(
+            PrizeSpinPurchase.user_id == user_id,
+            PrizeSpinPurchase.status == PaymentStatus.PAID,
+            PrizeSpinPurchase.consumed_at.is_(None),
+        )
+        .order_by(PrizeSpinPurchase.paid_at.asc().nullsfirst(), PrizeSpinPurchase.created_at.asc())
+        .limit(1)
+    )
+
+
+async def consume_prize_spin_purchase(session: AsyncSession, purchase: PrizeSpinPurchase | None) -> None:
+    if purchase is None or purchase.consumed_at is not None:
+        return
+    purchase.consumed_at = datetime.utcnow()
+    await session.commit()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+from html import escape
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -14,6 +15,7 @@ from app.keyboards import (
     crypto_invoice_keyboard,
     donation_input_keyboard,
 )
+from app.config import get_settings
 from app.models import PaymentMethod
 from app.services.order_service import fulfill_subscription_payment
 from app.services.payment_service import (
@@ -26,11 +28,14 @@ from app.services.payment_service import (
     send_donation_invoice,
     send_plan_invoice,
     sync_crypto_payment_status,
+    mark_prize_spin_purchase_paid,
 )
 from app.services.plan_service import get_plan_by_id
 from app.services.user_service import get_or_create_user
+from app.services.prize_service import apply_discount_to_price, redeem_discount_award
 
 router = Router()
+settings = get_settings()
 
 
 class DonationStates(StatesGroup):
@@ -39,7 +44,11 @@ class DonationStates(StatesGroup):
 
 
 async def _send_access_message(message: Message, session: AsyncSession, payment) -> None:
-    user, plan, subscription, access_links = await fulfill_subscription_payment(session, message.bot, payment)
+    user, plan, subscription, access_links, referral_bonus_granted, referrer, referrer_subscription = await fulfill_subscription_payment(session, message.bot, payment)
+    if payment.prize_award_id:
+        from app.models import PrizeAward
+        award = await session.get(PrizeAward, payment.prize_award_id)
+        await redeem_discount_award(session, award)
     if user is None or plan is None or subscription is None:
         await message.answer("Не удалось активировать подписку. Напиши администратору.")
         return
@@ -64,6 +73,41 @@ async def _send_access_message(message: Message, session: AsyncSession, payment)
 
     await message.answer(text, reply_markup=after_purchase_keyboard())
 
+    if referral_bonus_granted and referrer is not None and referrer_subscription is not None:
+        bonus_days = settings.referral_bonus_days
+        bonus_until = referrer_subscription.ends_at.strftime("%Y-%m-%d %H:%M UTC")
+        try:
+            await message.bot.send_message(
+                referrer.telegram_id,
+                "🎉 По твоей реферальной ссылке пришёл новый оплативший пользователь.\n\n"
+                f"Начислил тебе +{bonus_days} дня(ей) подписки.\n"
+                f"Теперь доступ активен до: {bonus_until}",
+            )
+        except Exception:
+            pass
+
+
+
+def _test_payments_allowed(telegram_id: int | None) -> bool:
+    return settings.is_test_payments_enabled_for(telegram_id)
+
+
+async def _simulate_successful_subscription_payment(message: Message, session: AsyncSession, payment, method_label: str) -> None:
+    payment, is_new = await mark_payment_paid(
+        session=session,
+        payload=payment.payload,
+        telegram_payment_charge_id=f"test-{method_label.lower()}-{payment.id}",
+        provider_payment_charge_id=f"test-{method_label.lower()}-{payment.id}",
+    )
+    if payment is None:
+        await message.answer("Не удалось найти тестовый платёж.")
+        return
+    if not is_new:
+        await message.answer("Этот тестовый платёж уже был обработан.")
+        return
+    await message.answer(f"🧪 Тестовая оплата {escape(method_label)} подтверждена.")
+    await _send_access_message(message, session, payment)
+
 
 @router.callback_query(F.data.startswith("buy_stars:"))
 async def buy_stars_handler(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
@@ -80,7 +124,15 @@ async def buy_stars_handler(callback: CallbackQuery, session: AsyncSession, stat
         username=callback.from_user.username,
         full_name=callback.from_user.full_name,
     )
-    payment = await create_pending_payment(session, user, plan, payment_method=PaymentMethod.STARS)
+    amount_xtr, discount_award = await apply_discount_to_price(session, user.id, plan.price_xtr)
+    payment = await create_pending_payment(
+        session,
+        user,
+        plan,
+        payment_method=PaymentMethod.STARS,
+        amount_xtr=amount_xtr,
+        prize_award_id=discount_award.id if discount_award else None,
+    )
     await send_plan_invoice(callback.message, payment, plan)
     await callback.answer()
 
@@ -100,7 +152,15 @@ async def buy_crypto_handler(callback: CallbackQuery, session: AsyncSession, sta
         username=callback.from_user.username,
         full_name=callback.from_user.full_name,
     )
-    payment = await create_pending_payment(session, user, plan, payment_method=PaymentMethod.CRYPTOBOT)
+    amount_xtr, discount_award = await apply_discount_to_price(session, user.id, plan.price_xtr)
+    payment = await create_pending_payment(
+        session,
+        user,
+        plan,
+        payment_method=PaymentMethod.CRYPTOBOT,
+        amount_xtr=amount_xtr,
+        prize_award_id=discount_award.id if discount_award else None,
+    )
 
     try:
         pay_url = await create_crypto_invoice_for_payment(session, payment, plan)
@@ -151,6 +211,74 @@ async def check_crypto_handler(callback: CallbackQuery, session: AsyncSession, s
     else:
         await callback.answer("Этот платёж уже был обработан")
 
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("test_pay:"))
+async def test_payment_handler(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    await state.clear()
+    if not _test_payments_allowed(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Тестовый режим оплаты выключен", show_alert=True)
+        return
+
+    _, method, plan_id_raw = callback.data.split(":", maxsplit=2)
+    plan_id = int(plan_id_raw)
+    plan = await get_plan_by_id(session, plan_id)
+    if plan is None or not plan.is_active:
+        await callback.answer("Тариф не найден или отключён", show_alert=True)
+        return
+
+    user = await get_or_create_user(
+        session=session,
+        telegram_id=callback.from_user.id,
+        username=callback.from_user.username,
+        full_name=callback.from_user.full_name,
+    )
+
+    payment_method = PaymentMethod.STARS if method == "stars" else PaymentMethod.CRYPTOBOT
+    method_label = "Stars" if method == "stars" else "CryptoBot"
+    amount_xtr, discount_award = await apply_discount_to_price(session, user.id, plan.price_xtr)
+    payment = await create_pending_payment(
+        session,
+        user,
+        plan,
+        payment_method=payment_method,
+        amount_xtr=amount_xtr,
+        prize_award_id=discount_award.id if discount_award else None,
+    )
+    await _simulate_successful_subscription_payment(callback.message, session, payment, method_label)
+    await callback.answer("Тестовая оплата обработана")
+
+
+@router.callback_query(F.data == "test_donate:stars")
+async def test_donate_stars_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    if not _test_payments_allowed(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Тестовый режим оплаты выключен", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        "🧪 Тест доната Stars прошёл успешно.\n\n"
+        "Оу, это было красиво. Спасибо за донат! ⚡️\n"
+        "Обожаю такую взаимность. Обещаю пустить эти ресурсы на создание еще более горячего контента для тебя💎",
+        reply_markup=after_purchase_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "test_donate:crypto")
+async def test_donate_crypto_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    if not _test_payments_allowed(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Тестовый режим оплаты выключен", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        "🧪 Тест доната CryptoBot прошёл успешно.\n\n"
+        "Оу, это было красиво. Спасибо за донат! ⚡️\n"
+        "Обожаю такую взаимность. Обещаю пустить эти ресурсы на создание еще более горячего контента для тебя💎",
+        reply_markup=after_purchase_keyboard(),
+    )
     await callback.answer()
 
 

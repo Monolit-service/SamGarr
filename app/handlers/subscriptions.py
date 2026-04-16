@@ -8,6 +8,7 @@ from app.keyboards import profile_keyboard
 from app.services.admin_service import is_admin_user
 from app.services.subscription_service import get_user_subscriptions
 from app.services.user_service import get_or_create_user
+from app.services.referral_service import build_referral_link, get_referral_bonus_days_granted, get_referral_count
 from app.utils.text import format_profile_text, format_subscription_line
 
 router = Router()
@@ -34,7 +35,14 @@ async def profile_command(message: Message, session: AsyncSession, state: FSMCon
         full_name=message.from_user.full_name,
     )
     rows = await get_user_subscriptions(session, message.from_user.id)
-    await message.answer(format_profile_text(user, rows), reply_markup=profile_keyboard(is_admin=is_admin_user(message.from_user.id if message.from_user else None)))
+    referral_count = await get_referral_count(session, user.id)
+    referral_bonus_days = await get_referral_bonus_days_granted(session, user.id)
+    bot_info = await message.bot.get_me()
+    referral_link = build_referral_link(bot_info.username, user.referral_code) if bot_info.username and user.referral_code else None
+    await message.answer(
+        format_profile_text(user, rows, referral_link=referral_link, referral_count=referral_count, referral_bonus_days=referral_bonus_days),
+        reply_markup=profile_keyboard(is_admin=is_admin_user(message.from_user.id if message.from_user else None)),
+    )
 
 
 @router.callback_query(lambda c: c.data == "my_subscriptions")
@@ -60,5 +68,12 @@ async def my_profile_callback(callback: CallbackQuery, session: AsyncSession, st
         full_name=callback.from_user.full_name,
     )
     rows = await get_user_subscriptions(session, callback.from_user.id)
-    await callback.message.edit_text(format_profile_text(user, rows), reply_markup=profile_keyboard(is_admin=is_admin_user(callback.from_user.id if callback.from_user else None)))
+    referral_count = await get_referral_count(session, user.id)
+    referral_bonus_days = await get_referral_bonus_days_granted(session, user.id)
+    bot_info = await callback.message.bot.get_me()
+    referral_link = build_referral_link(bot_info.username, user.referral_code) if bot_info.username and user.referral_code else None
+    await callback.message.edit_text(
+        format_profile_text(user, rows, referral_link=referral_link, referral_count=referral_count, referral_bonus_days=referral_bonus_days),
+        reply_markup=profile_keyboard(is_admin=is_admin_user(callback.from_user.id if callback.from_user else None)),
+    )
     await callback.answer()

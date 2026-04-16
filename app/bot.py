@@ -17,12 +17,14 @@ from app.handlers.admin import router as admin_router
 from app.handlers.payments import router as payments_router
 from app.handlers.polls import router as polls_router
 from app.handlers.start import router as start_router
+from app.handlers.prizes import router as prizes_router
 from app.handlers.subscriptions import router as subscriptions_router
 from app.models import Base, Payment, PaymentMethod, PaymentStatus
 from app.seed import seed_plans
 from app.services.order_service import fulfill_subscription_payment
 from app.services.payment_service import sync_crypto_payment_status
 from app.services.subscription_service import expire_due_subscriptions
+from app.services.referral_service import backfill_missing_referral_codes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +36,7 @@ settings = get_settings()
 
 def register_routers(dp: Dispatcher) -> None:
     dp.include_router(start_router)
+    dp.include_router(prizes_router)
     dp.include_router(admin_router)
     dp.include_router(payments_router)
     dp.include_router(polls_router)
@@ -59,6 +62,48 @@ async def ensure_schema() -> None:
             await conn.execute(
                 text("ALTER TABLE payments ADD COLUMN payment_method VARCHAR(50) DEFAULT 'stars' NOT NULL")
             )
+        if "prize_award_id" not in columns:
+            await conn.execute(
+                text("ALTER TABLE payments ADD COLUMN prize_award_id INTEGER NULL")
+            )
+
+        if dialect == "sqlite":
+            prize_rows = await conn.execute(text("PRAGMA table_info(prize_awards)"))
+            prize_columns = {row[1] for row in prize_rows.fetchall()}
+        else:
+            prize_rows = await conn.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'prize_awards'"
+                )
+            )
+            prize_columns = {row[0] for row in prize_rows.fetchall()}
+
+        if "is_burned" not in prize_columns:
+            await conn.execute(text("ALTER TABLE prize_awards ADD COLUMN is_burned BOOLEAN DEFAULT 0 NOT NULL"))
+        if "burned_at" not in prize_columns:
+            await conn.execute(text("ALTER TABLE prize_awards ADD COLUMN burned_at DATETIME NULL"))
+
+        if dialect == "sqlite":
+            user_rows = await conn.execute(text("PRAGMA table_info(users)"))
+            user_columns = {row[1] for row in user_rows.fetchall()}
+        else:
+            user_rows = await conn.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'users'"
+                )
+            )
+            user_columns = {row[0] for row in user_rows.fetchall()}
+
+        if "referral_code" not in user_columns:
+            await conn.execute(text("ALTER TABLE users ADD COLUMN referral_code VARCHAR(64) NULL"))
+        if "referred_by_user_id" not in user_columns:
+            await conn.execute(text("ALTER TABLE users ADD COLUMN referred_by_user_id INTEGER NULL"))
+        if "referred_at" not in user_columns:
+            await conn.execute(text("ALTER TABLE users ADD COLUMN referred_at DATETIME NULL"))
+        if "referral_bonus_granted_at" not in user_columns:
+            await conn.execute(text("ALTER TABLE users ADD COLUMN referral_bonus_granted_at DATETIME NULL"))
 
 
 async def create_db() -> None:
@@ -69,6 +114,7 @@ async def create_db() -> None:
 
     async with SessionLocal() as session:
         await seed_plans(session)
+        await backfill_missing_referral_codes(session)
 
 
 async def expired_subscriptions_job(bot: Bot) -> None:
@@ -156,3 +202,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+

@@ -27,6 +27,8 @@ from app.services.question_service import (
     register_question_delivery,
 )
 from app.services.user_service import get_or_create_user
+from app.services.referral_service import attach_referrer_from_start_argument
+from app.services.prize_service import apply_discount_to_price, get_active_discount_award
 from app.models import AnonymousQuestionStatus, User
 from app.utils.text import format_welcome_text
 
@@ -47,12 +49,16 @@ QUESTION_ID_RE = re.compile(r"ID вопроса:\s*(\d+)")
 async def start_handler(message: Message, session: AsyncSession, state: FSMContext) -> None:
     await state.clear()
     user = message.from_user
-    await get_or_create_user(
+    db_user = await get_or_create_user(
         session=session,
         telegram_id=user.id,
         username=user.username,
         full_name=user.full_name,
     )
+    start_argument = None
+    if message.text and " " in message.text:
+        start_argument = message.text.split(" ", maxsplit=1)[1].strip()
+    await attach_referrer_from_start_argument(session, db_user, start_argument)
     text = format_welcome_text(settings.channel_1_name, settings.channel_2_name)
     await message.answer(text, reply_markup=main_menu(is_admin=is_admin_user(user.id)))
 
@@ -84,11 +90,26 @@ async def plan_details_handler(callback: CallbackQuery, session: AsyncSession, s
         await callback.answer("Тариф не найден или отключён", show_alert=True)
         return
 
+    price_line = f"Цена в Telegram: {plan.price_xtr} ⭐"
+    if callback.from_user:
+        user = await get_or_create_user(
+            session=session,
+            telegram_id=callback.from_user.id,
+            username=callback.from_user.username,
+            full_name=callback.from_user.full_name,
+        )
+        discounted_amount, discount_award = await apply_discount_to_price(session, user.id, plan.price_xtr)
+        if discount_award is not None and discounted_amount != plan.price_xtr:
+            price_line = (
+                f"Цена в Telegram: <s>{plan.price_xtr} ⭐</s> → <b>{discounted_amount} ⭐</b>\n"
+                f"Активный приз: {escape(discount_award.prize_title)}"
+            )
+
     text = (
         f"<b>{escape(plan.title)}</b>\n\n"
         f"{escape(plan.description)}\n\n"
         f"Срок: {plan.duration_days} дней\n"
-        f"Цена в Telegram: {plan.price_xtr} ⭐\n\n"
+        f"{price_line}\n\n"
         "Выбери способ оплаты:"
     )
     await callback.message.edit_text(text, reply_markup=plan_payment_keyboard(plan))
@@ -101,7 +122,7 @@ async def donations_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.edit_text(
         "Поддержать проект можно звёздами внутри Telegram или через CryptoBot.\n"
         "После выбора способа бот попросит ввести любую сумму доната.",
-        reply_markup=donation_methods_keyboard(),
+        reply_markup=donation_methods_keyboard(allow_test_buttons=settings.is_test_payments_enabled_for(callback.from_user.id if callback.from_user else None)),
     )
     await callback.answer()
 

@@ -111,3 +111,58 @@ async def expire_due_subscriptions(session: AsyncSession, bot) -> int:
 
     await session.commit()
     return expired_count
+
+
+async def grant_free_days_subscription(session: AsyncSession, user: User, plan: Plan, free_days: int, bot) -> tuple[Subscription, list[str]]:
+    now = datetime.utcnow()
+
+    subscription = await session.scalar(
+        select(Subscription)
+        .where(
+            and_(
+                Subscription.user_id == user.id,
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                Subscription.ends_at > now,
+                Subscription.plan_id == plan.id,
+            )
+        )
+        .order_by(Subscription.ends_at.desc())
+    )
+
+    if subscription is None:
+        same_scope_active = await session.scalar(
+            select(Subscription)
+            .join(Plan, Subscription.plan_id == Plan.id)
+            .where(
+                and_(
+                    Subscription.user_id == user.id,
+                    Subscription.status == SubscriptionStatus.ACTIVE,
+                    Subscription.ends_at > now,
+                    Plan.channel_scope == plan.channel_scope,
+                )
+            )
+            .order_by(Subscription.ends_at.desc())
+        )
+        subscription = same_scope_active
+
+    if subscription is None:
+        subscription = Subscription(
+            user_id=user.id,
+            plan_id=plan.id,
+            starts_at=now,
+            ends_at=now + timedelta(days=free_days),
+            status=SubscriptionStatus.ACTIVE,
+        )
+        session.add(subscription)
+    else:
+        base_end = subscription.ends_at if subscription.ends_at > now else now
+        if subscription.ends_at <= now:
+            subscription.starts_at = now
+            subscription.status = SubscriptionStatus.ACTIVE
+            subscription.plan_id = plan.id
+        subscription.ends_at = base_end + timedelta(days=free_days)
+
+    await session.commit()
+    await session.refresh(subscription)
+    links = await create_access_links(bot, plan.channel_scope)
+    return subscription, links

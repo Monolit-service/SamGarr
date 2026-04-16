@@ -22,7 +22,10 @@ def main_menu(*, is_admin: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="🔐 Хочу в приват", callback_data="show_plans")
     builder.button(text="❓ Задать смелый вопрос", callback_data="ask_bold_question")
+    builder.button(text="🎁 Рандомайзер призов", callback_data="prize_menu")
     builder.button(text="💳 Поддержка автора", callback_data="show_donations")
+    if settings.external_bot_url:
+        builder.button(text="🔌 MonoliteVPN", url=settings.external_bot_url)
     if is_admin:
         builder.button(text="🛠 Админ-панель", callback_data="admin_panel")
     builder.adjust(1)
@@ -37,13 +40,14 @@ def plans_keyboard(plans: list[Plan]) -> InlineKeyboardMarkup:
             callback_data=f"plan:{plan.id}",
         )
     builder.button(text="👤 Мой профиль", callback_data="my_profile")
+    builder.button(text="🎁 Мои призы", callback_data="prize_menu")
     builder.button(text="💝 Донаты", callback_data="show_donations")
     add_main_menu_button(builder)
     builder.adjust(1)
     return builder.as_markup()
 
 
-def plan_payment_keyboard(plan: Plan) -> InlineKeyboardMarkup:
+def plan_payment_keyboard(plan: Plan, *, allow_test_buttons: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text=f"⭐ Оплатить за {plan.price_xtr} XTR", callback_data=f"buy_stars:{plan.id}")
     if settings.crypto_pay_enabled:
@@ -52,6 +56,10 @@ def plan_payment_keyboard(plan: Plan) -> InlineKeyboardMarkup:
             text=f"🪙 CryptoBot · {crypto_price} {settings.crypto_pay_asset}",
             callback_data=f"buy_crypto:{plan.id}",
         )
+    if allow_test_buttons:
+        builder.button(text="🧪 Тест Stars", callback_data=f"test_pay:stars:{plan.id}")
+        if settings.crypto_pay_enabled:
+            builder.button(text="🧪 Тест CryptoBot", callback_data=f"test_pay:crypto:{plan.id}")
     builder.button(text="⬅️ К тарифам", callback_data="show_plans")
     builder.button(text="👤 Мой профиль", callback_data="my_profile")
     add_main_menu_button(builder)
@@ -63,17 +71,25 @@ def crypto_invoice_keyboard(pay_url: str, payment_id: int) -> InlineKeyboardMark
     builder = InlineKeyboardBuilder()
     builder.button(text="🪙 Открыть счёт CryptoBot", url=pay_url)
     builder.button(text="✅ Проверить оплату", callback_data=f"check_crypto:{payment_id}")
+    if allow_test_buttons:
+        builder.button(text="🧪 Тест Stars", callback_data=f"test_pay:stars:{plan.id}")
+        if settings.crypto_pay_enabled:
+            builder.button(text="🧪 Тест CryptoBot", callback_data=f"test_pay:crypto:{plan.id}")
     builder.button(text="⬅️ К тарифам", callback_data="show_plans")
     add_main_menu_button(builder)
     builder.adjust(1)
     return builder.as_markup()
 
 
-def donation_methods_keyboard() -> InlineKeyboardMarkup:
+def donation_methods_keyboard(*, allow_test_buttons: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="⭐ Донат звёздами", callback_data="donate:stars")
     if settings.crypto_pay_enabled:
         builder.button(text="🪙 Донат через CryptoBot", callback_data="donate:crypto")
+    if allow_test_buttons:
+        builder.button(text="🧪 Тест доната Stars", callback_data="test_donate:stars")
+        if settings.crypto_pay_enabled:
+            builder.button(text="🧪 Тест доната CryptoBot", callback_data="test_donate:crypto")
     if settings.donate_url:
         builder.button(text="🔗 Внешняя ссылка на донат", url=settings.donate_url)
     add_main_menu_button(builder)
@@ -197,6 +213,20 @@ def admin_panel_keyboard(*, is_busy: bool = False) -> InlineKeyboardMarkup:
     builder.button(text="📊 Обновить статистику", callback_data="admin_stats")
     if not is_busy:
         builder.button(text="🗄 Скачать БД", callback_data="admin_backup")
+    add_main_menu_button(builder)
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def prize_menu_keyboard(*, can_spin: bool = True, can_buy_access: bool = False, access_price_xtr: int | None = None) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if can_spin:
+        builder.button(text="🎰 Крутить рандомайзер", callback_data="prize_spin")
+    else:
+        builder.button(text="⏳ Рандомайзер на перезарядке", callback_data="prize_cooldown")
+    if can_buy_access and access_price_xtr:
+        builder.button(text=f"⭐ Купить доступ за {access_price_xtr} XTR", callback_data="prize_buy_access")
+    builder.button(text="👤 Мой профиль", callback_data="my_profile")
     add_main_menu_button(builder)
     builder.adjust(1)
     return builder.as_markup()

@@ -24,7 +24,14 @@ def format_welcome_text(channel_1_name: str, channel_2_name: str) -> str:
     )
 
 
-def format_profile_text(user: User | None, subscription_rows: list[tuple[Subscription, Plan]]) -> str:
+def format_profile_text(
+    user: User | None,
+    subscription_rows: list[tuple[Subscription, Plan]],
+    *,
+    referral_link: str | None = None,
+    referral_count: int = 0,
+    referral_bonus_days: int = 0,
+) -> str:
     username = f"@{user.username}" if user and user.username else "—"
     full_name = user.full_name if user and user.full_name else "—"
     telegram_id = user.telegram_id if user else "—"
@@ -41,7 +48,12 @@ def format_profile_text(user: User | None, subscription_rows: list[tuple[Subscri
         f"Username: {username}",
         f"Имя: {full_name}",
         f"Активных подписок: {len(active_rows)}",
+        f"Приглашено по ссылке: {referral_count}",
+        f"Бонусных дней по рефералке: {referral_bonus_days}",
     ]
+
+    if referral_link:
+        text.append(f"\n<b>Твоя реферальная ссылка</b>\n<code>{escape(referral_link)}</code>")
 
     if not subscription_rows:
         text.append("\nПодписок пока нет.")
