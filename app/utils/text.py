@@ -122,3 +122,29 @@ def format_admin_panel_text(stats: AdminStats) -> str:
         f"Активных опросов: <b>{stats.active_polls}</b>\n\n"
         "Через эту панель можно скачать актуальный бэкап проекта."
     )
+
+
+def format_referral_program_text(*, referral_link: str | None = None, referral_count: int = 0, referral_bonus_days: int = 0) -> str:
+    lines = [
+        "<b>👥 Реферальная программа</b>",
+        "",
+        "Приглашай друзей по своей личной ссылке и получай бонусы.",
+        "За каждого приглашённого пользователя, который оплатит подписку впервые, тебе начисляется <b>+3 дня подписки</b>.",
+        "",
+        f"Приглашено пользователей: <b>{referral_count}</b>",
+        f"Начислено бонусных дней: <b>{referral_bonus_days}</b>",
+    ]
+
+    if referral_link:
+        lines.extend(["", "<b>Твоя реферальная ссылка</b>", f"<code>{escape(referral_link)}</code>"] )
+    else:
+        lines.extend(["", "Реферальная ссылка появится после получения username бота."])
+
+    lines.extend([
+        "",
+        "<b>Важно:</b>",
+        "• засчитывается только первый успешный платёж приглашённого пользователя;",
+        "• самого себя пригласить нельзя;",
+        "• уже привязанного пользователя перепривязать нельзя.",
+    ])
+    return "\n".join(lines)

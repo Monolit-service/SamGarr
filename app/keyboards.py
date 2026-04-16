@@ -23,12 +23,18 @@ def main_menu(*, is_admin: bool = False) -> InlineKeyboardMarkup:
     builder.button(text="🔐 Хочу в приват", callback_data="show_plans")
     builder.button(text="❓ Задать смелый вопрос", callback_data="ask_bold_question")
     builder.button(text="🎁 Рандомайзер призов", callback_data="prize_menu")
+    builder.button(text="👥 Реферальная программа", callback_data="referral_program")
     builder.button(text="💳 Поддержка автора", callback_data="show_donations")
     if settings.external_bot_url:
         builder.button(text="🔌 MonoliteVPN", url=settings.external_bot_url)
     if is_admin:
         builder.button(text="🛠 Админ-панель", callback_data="admin_panel")
-    builder.adjust(1)
+    layout = [1, 1, 2, 1]
+    if settings.external_bot_url:
+        layout.append(1)
+    if is_admin:
+        layout.append(1)
+    builder.adjust(*layout)
     return builder.as_markup()
 
 
@@ -138,6 +144,15 @@ def after_purchase_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="👤 Мой профиль", callback_data="my_profile")
     builder.button(text="💳 Купить ещё", callback_data="show_plans")
     builder.button(text="💝 Донаты", callback_data="show_donations")
+    add_main_menu_button(builder)
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def referral_program_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="👤 Мой профиль", callback_data="my_profile")
+    builder.button(text="🎁 Рандомайзер призов", callback_data="prize_menu")
     add_main_menu_button(builder)
     builder.adjust(1)
     return builder.as_markup()
